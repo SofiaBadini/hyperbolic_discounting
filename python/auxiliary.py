@@ -1,156 +1,273 @@
-"""Auxiliary functions for notebook on hyperbolic discounting."""
+"""Auxiliary functions for comparison of hyperbolic vs. exponential KW94."""
 
 import matplotlib.pyplot as plt
+import seaborn as sns
 import pandas as pd
 import numpy as np
 import respy as rp
+import glob
+from matplotlib.lines import Line2D
 
-def plot_robinson_choices_base(df, df_beta, df_lowbeta):
 
-    fig = plt.figure(figsize=(12, 4))
-    ax = fig.add_subplot()
+def generate_data(model, present_bias=1):
+    """Generate and save simulated data from specified model, with specified
+    present-bias parameter.
 
-    x = np.arange(10)
+    Parameters
+    ----------
+    model: string
+        "kw_94_one", "kw_94_two", "kw_94_three" according to the desired
+        Keane and Wolpin (1994) specification.
+    present bias: float
+        1 for exponential discounting, < 1 for hyperbolic discounting.
 
-    bar_width = 0.25
+    """
+    params, options = rp.get_example_model(model, with_data=False)
 
-    colors = [["#1f77b4", "#ff7f0e"],
-              ["#428dc1", "#ff9833"],
-              ["#70a8d0", "#ffb369"]]
-    labels = ["β=1", "β=0.8", "β=0.5"]
-    positions = [x, x+bar_width*1.2, x+bar_width*2.4]
+    params.loc[("beta", "beta"), ["value", "comment"]] = [
+        present_bias,
+        "present-bias parameter",
+    ]
 
-    for i, series in enumerate([df, df_beta, df_lowbeta]):
-        hammock = series.groupby("Period").Choice.value_counts().unstack().loc[:, "hammock"]
-        fishing = series.groupby("Period").Choice.value_counts().unstack().loc[:, "fishing"]
-        ax.bar(
-            positions[i], fishing, width=bar_width,
-            color=colors[i][0], label=labels[i]
+    simulation_seeds = np.linspace(0, 99, 100)
+    solution_seeds = np.linspace(1000, 1099, 100)
+
+    # Generate datasets
+    for simulation, solution in zip(simulation_seeds, solution_seeds):
+        options["simulation_seed"] = int(simulation)
+        options["solution_seed"] = int(solution)
+        simulate = rp.get_simulate_func(params, options)
+        df = simulate(params)
+
+        # Save datasets (require paths to exist)
+        if present_bias == 1:
+            df.to_pickle(
+                f"respy_datasets/exp_datasets/{model}/seed_sim_{str(int(simulation))}_sol_seed_{str(int(solution))}.pickle"
             )
-        ax.bar(
-            positions[i], hammock, width=bar_width,
-            bottom=fishing, color=colors[i][1], label=labels[i]
+        else:
+            df.to_pickle(
+                f"respy_datasets/hyp_datasets/{model}/seed_sim_{str(int(simulation))}_sol_seed_{str(int(solution))}.pickle"
             )
 
-    ax.set_xticks(x + 2*bar_width / 2)
-    ax.set_xticklabels(np.arange(10))
-    ax.set_xlabel("Periods")
 
-    handles, _ = ax.get_legend_handles_labels()
-    handles_positions = [[0, 2, 4], [1, 3, 5]]
-    bbox_to_anchor=[(1.12, 0.5), (1.12, 0.8)]
+def load_data(model, discounting):
+    """Load generated data.
 
-    for i, title in enumerate(["fishing", "hammock"]):
-        legend = plt.legend(handles=list(handles[j] for j in handles_positions[i]),
-        ncol=1, bbox_to_anchor=bbox_to_anchor[i], title=title, frameon=False)
-        plt.gca().add_artist(legend)
+    Parameters
+    ----------
+    model: string
+        "kw_94_one", "kw_94_two", "kw_94_three" according to the desired
+        Keane and Wolpin (1994) specification.
+    discounting: string
+        "exp" to load data from exponential discounting model, "hyp" to load
+        data from hyperbolic discounting model
 
-    fig.suptitle("Robinson's choices", y = 0.95)
-
-    plt.show()
-
-
-def plot_return_experience(mean_max_exp_fishing_by_beta, grid_points):
-
-    fig, ax = plt.subplots(figsize=(8,6))
-    labels = ["β=1", "β=0.8", "β=0.5"]
-
-    for mean_max_exp_fishing, label in zip(mean_max_exp_fishing_by_beta, labels):
-        plt.plot(grid_points, mean_max_exp_fishing, label=label)
-
-    plt.ylim([0, 10])
-    plt.xlabel("Return to experience")
-    plt.ylabel("Average final level of experience")
-
-    plt.legend()
-
-    plt.show()
+    """
+    datasets = glob.glob(f"respy_datasets/{discounting}_datasets/{model}/*")
+    data = []
+    for file in datasets:
+        df = pd.read_pickle(file)
+        data.append(df)
+    return data
 
 
-def plot_myopic_vs_present_bias(df_myopic, df_lowbeta):
-
-    fig, axs = plt.subplots(1, 2, figsize=(12, 4))
-
-    df_myopic.groupby("Period").Choice.value_counts().unstack().plot.bar(
-        ax=axs[0], stacked=True, rot=0, legend=False, title="Completely myiopic")
-    df_lowbeta.groupby("Period").Choice.value_counts().unstack().plot.bar(
-        ax=axs[1], stacked=True, rot=0, title="With present bias (β=0.5)")
-
-    handles, _ = axs[0].get_legend_handles_labels()
-    axs[1].get_legend().remove()
-    fig.legend(
-        handles=handles, loc='lower center', bbox_to_anchor=(0.5, 0), ncol=3
+def compare_choice_frequencies(data_exp, data_hyp):
+    """Return plot to compare choice frequencies."""
+    moments = ["a", "b", "edu", "home"]
+    titles = ["Occupation A", "Occupation B", "Education", "Home"]
+    for moment, title in zip(moments, titles):
+        plot_moment(
+            data_exp,
+            data_hyp,
+            calc_choice_frequencies,
+            plot="line",
+            moment=moment,
+            title=title,
         )
-    fig.suptitle("Robinson's choices", fontsize=14, y=1.05)
-
-    plt.tight_layout(rect=[0,0.05,1,1])
-
-    plt.show()
 
 
-def plot_robinson_choices_extended(df_ext, df_beta_ext):
-
-    fig, axs = plt.subplots(1, 2, figsize=(12, 4))
-
-    df_ext.groupby("Period").Choice.value_counts().unstack().plot.bar(
-        ax=axs[0], stacked=True, rot=0, legend=False,
-        title="Without present bias", color=["C0", "C2", "C1"])
-    df_beta_ext.groupby("Period").Choice.value_counts().unstack().plot.bar(
-        ax=axs[1], stacked=True, rot=0,
-        title="With present bias (β=0.8)", color=["C0", "C2", "C1"])
-
-    handles, _ = axs[0].get_legend_handles_labels()
-    axs[1].get_legend().remove()
-    fig.legend(
-        handles=handles,
-        loc='lower center',
-        bbox_to_anchor=(0.5, 0),
-        ncol=3)
-    fig.suptitle("Robinson's choices", fontsize=14, y=1.05)
-
-    plt.tight_layout(rect=[0,0.05,1,1])
+def compare_wages(data_exp, data_hyp):
+    """Return plot to compare mean and standard deviation of wage distribution."""
+    moments = ["mean", "std"]
+    titles = ["Mean", "Standard Deviation"]
+    for moment, title in zip(moments, titles):
+        plot_moment(
+            data_exp,
+            data_hyp,
+            calc_wage_distribution,
+            plot="line",
+            moment=moment,
+            title=title,
+        )
 
 
-def plot_profile_likelihood(results, params, estimates):
-    for index, fvals in results.items():
-        fig, ax = plt.subplots()
-
-        upper, lower = params.loc[index][["upper", "lower"]]
-        grid = np.linspace(lower, upper, 20)
-
-        ax.axvline(
-            params.loc[index, "value"],
-            color="#A9A9A9",
-            linestyle="--",
-            label="Baseline"
-            )
-        ax.axvline(
-            estimates.loc[index, "value"],
-            color="red",
-            linestyle="--",
-            label="True value")
-        ax.plot(grid, np.array(fvals) - np.max(fvals))
-        ax.set_title(index)
-        plt.show()
+def compare_mean_experience(data_exp, data_hyp):
+    """Return a plot to compare mean experience by occupation."""
+    moments = ["Experience_A", "Experience_B", "Experience_Edu"]
+    titles = ["Occupation A", "Occupation B", "Education"]
+    for moment, title in zip(moments, titles):
+        plot_moment(
+            data_exp,
+            data_hyp,
+            calc_experience_per_period,
+            plot="line",
+            moment=moment,
+            title=title,
+        )
 
 
-def compute_profile_likelihood(params, options, df):
+def compare_final_experience(data_exp, data_hyp):
+    """Return a plot to compare final experience by occupation."""
+    moments = ["Experience_A", "Experience_B", "Experience_Edu"]
+    titles = ["Occupation A", "Occupation B", "Education"]
+    for moment, title in zip(moments, titles):
+        plot_moment(
+            data_exp,
+            data_hyp,
+            calc_final_experience,
+            plot="bar",
+            moment=moment,
+            title=title,
+        )
 
-    crit_func = rp.get_crit_func(params, options, df)
 
-    results = dict()
-    for index in params[0:2].index:
+def compare_total_utility(data_exp, data_hyp):
+    """Compare distribution of total utility achieved."""
+    fig, ax = plt.subplots(1, 1, figsize=(15, 5))
+    for color, data in zip(["black", "red"], [data_exp, data_hyp]):
+        for df in data:
+            utility = compute_total_utility(df)
+            utility.plot.kde(color=color, alpha=0.1)
 
-        upper, lower = params.loc[index][["upper", "lower"]]
-        grid = np.linspace(lower, upper, 20)
+    ax.set_xlabel("Utility")
+    custom_lines = [
+        Line2D([0], [0], color="black", lw=2),
+        Line2D([0], [0], color="red", lw=2),
+    ]
+    ax.legend(custom_lines, ["Exponential", "Hyperbolic"])
+    fig.suptitle("Distribution of Total Utility Achieved")
 
-        fvals = list()
-        for value in grid:
-            params_copy = params.copy()
-            params_copy.loc[index, "value"] = value
-            fval = options["simulation_agents"] * crit_func(params_copy)
-            fvals.append(fval)
 
-            results[index] = fvals
+def plot_moment(data_exp, data_hyp, func, plot, moment, title):
+    """ Plot moment of interest, comparing exponential and hyperbolic data.
 
-    return results
+    Parameters
+    ----------
+    data_exp: list of pd.DataFrame
+        Data generated by exponential discounting model.
+    data_hyp: list of pd.DataFrame
+        Data generated by hyperbolic discounting model.
+    func: function
+        Function that generates relevant moments.
+    plot: string
+        "bar" to obtain bar plots, "line" to obtain line plots.
+    moment: string
+        Moment to be computed (e.g. "mean", "std").
+    title: string
+        Title of the plot.
+
+    """
+    fig, axs = plt.subplots(1, 2, figsize=(15, 5))
+    axs = axs.flatten()
+    ymins = []
+    ymaxs = []
+    for ax, data in zip(axs, [data_exp, data_hyp]):
+        for df in data:
+
+            if isinstance(df.index, pd.MultiIndex):
+                df.reset_index(inplace=True)
+
+            if plot == "line":
+                ax.plot(func(df)[moment], color="black", alpha=0.1)
+                ax.set_xlabel("Period")
+            elif plot == "bar":
+                ax.bar(
+                    func(df).index, height=func(df)[moment], color="black", alpha=0.1
+                )
+                ax.set_xlabel("Number of periods")
+
+        # Adjust y-axis and x-axis to make plots comparable
+        ymin, ymax = ax.get_ylim()
+        ymins.append(ymin)
+        ymaxs.append(ymax)
+    for ax in axs:
+        ax.set_ylim(min(ymins), max(ymaxs))
+
+    fig.suptitle(title)
+
+
+def calc_choice_frequencies(df):
+
+    return df.groupby("Period").Choice.value_counts(normalize=True).unstack()
+
+
+def calc_wage_distribution(df):
+
+    return df.groupby(["Period"])["Wage"].describe()[["mean", "std"]]
+
+
+def calc_experience_per_period(df):
+
+    return df.groupby(["Period"])[
+        ["Experience_A", "Experience_B", "Experience_Edu"]
+    ].mean()
+
+
+def calc_final_experience(df):
+
+    mom = pd.DataFrame(index=(range(0, 40)))
+    mom["Experience_Edu"] = (
+        df[df["Period"] == 39]["Experience_Edu"]
+        .value_counts(normalize=True)
+        .sort_index()
+    )
+    mom["Experience_A"] = (
+        df[df["Period"] == 39]["Experience_A"].value_counts(normalize=True).sort_index()
+    )
+    mom["Experience_B"] = (
+        df[df["Period"] == 39]["Experience_B"].value_counts(normalize=True).sort_index()
+    )
+
+    return mom.fillna(0)
+
+
+def compute_utility_per_period(df):
+
+    df_utility = compute_utility_dataframe(df)
+    mom = pd.DataFrame(index=(range(0, 40)))
+    mom["utility_per_period"] = df_utility.groupby("Period").Flow_Utility.mean()
+
+    return mom
+
+
+def compute_total_utility(df):
+
+    df_utility = compute_utility_dataframe(df)
+
+    final_utility = df_utility.groupby("Identifier").Flow_Utility.sum()
+
+    return final_utility
+
+
+def compute_utility_dataframe(df):
+
+    data = pd.DataFrame()
+
+    choices = ["edu", "a", "b", "home"]
+    utilities = [
+        "Flow_Utility_Edu",
+        "Flow_Utility_A",
+        "Flow_Utility_B",
+        "Flow_Utility_Home",
+    ]
+
+    for choice, utility in zip(choices, utilities):
+        mask = df["Choice"] == choice
+        newdf = df[mask][["Period", "Identifier", "Choice", utility]].rename(
+            columns={utility: "Flow_Utility"}
+        )
+        data = data.append(newdf)
+
+    data = data.sort_values(by=["Period", "Identifier"]).reset_index(drop=True)
+
+    return data
